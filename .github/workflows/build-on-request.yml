@@ -17,26 +17,26 @@ jobs:
       uses: microsoft/setup-msbuild@v2
       id: setup_msbuild
 
-    - name: Run vcpkg
-      uses: lukka/run-vcpkg@v7
-      with:
-        vcpkgDirectory: ${{ runner.workspace }}/vcpkg/
-        vcpkgTriplet: x86-windows-static
-        vcpkgGitCommitId: 3b3bd424827a1f7f4813216f6b32b6c61e386b2e
-        vcpkgArguments: >
-          boost-iostreams boost-asio boost-beast boost-system boost-variant boost-lockfree boost-process boost-program-options boost-uuid boost-filesystem
-          luajit glew physfs openal-soft libogg libvorbis zlib libzip bzip2 openssl
+    - name: Setup vcpkg
+      run: |
+        git clone https://github.com/microsoft/vcpkg.git ${{ runner.workspace }}\vcpkg
+        cd ${{ runner.workspace }}\vcpkg
+        .\bootstrap-vcpkg.bat
+
+    - name: Install vcpkg packages
+      run: |
+        ${{ runner.workspace }}\vcpkg\vcpkg install --triplet x86-windows-static --clean-after-build boost-iostreams boost-asio boost-beast boost-system boost-variant boost-lockfree boost-process boost-program-options boost-uuid boost-filesystem luajit glew physfs openal-soft libogg libvorbis zlib libzip bzip2 openssl
 
     - name: Integrate vcpkg
       run: |
-        ${{ runner.workspace }}/vcpkg/vcpkg integrate install
-        
+        ${{ runner.workspace }}\vcpkg\vcpkg integrate install
+
     - name: Compile otclient_dx
       timeout-minutes: 20
       run: |
         cd vc16
         MSBuild /property:Configuration=DirectX /p:BUILD_REVISION=${{github.run_number}}
-        
+
     - name: Compile otclient_gl
       timeout-minutes: 20
       run: |
