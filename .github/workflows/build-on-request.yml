@@ -30,19 +30,16 @@ jobs:
         ${{ runner.workspace }}\vcpkg\vcpkg install --recurse --triplet x86-windows-static --clean-after-build boost-iostreams boost-asio boost-beast boost-system boost-variant boost-lockfree boost-process boost-program-options boost-uuid boost-filesystem luajit glew physfs openal-soft libogg libvorbis zlib libzip bzip2 openssl
         if %errorlevel% neq 0 exit /b %errorlevel%
 
-    - name: Verify boost headers
-      shell: powershell
-      run: |
-        $h = "${{ runner.workspace }}\vcpkg\installed\x86-windows-static\include\boost\asio.hpp"
-        if (Test-Path $h) { Write-Host "OK: boost headers found" }
-        else {
-          Write-Host "FAIL: headers missing. Contents of installed dir:"
-          Get-ChildItem "${{ runner.workspace }}\vcpkg\installed\" -Recurse -Depth 3 | Select-Object FullName | Out-String | Write-Host
-          exit 1
-        }
-
     - name: Integrate vcpkg
       run: ${{ runner.workspace }}\vcpkg\vcpkg integrate install
+
+    - name: Patch source for newer boost
+      shell: powershell
+      run: |
+        # Newer boost removed deprecated io_service.hpp - replace with io_context.hpp
+        $pch = "src\framework\pch.h"
+        (Get-Content $pch) -replace 'boost/asio/io_service\.hpp', 'boost/asio/io_context.hpp' | Set-Content $pch
+        Write-Host "Patched pch.h for newer boost"
 
     - name: Compile otclient_dx
       timeout-minutes: 20
