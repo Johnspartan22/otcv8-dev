@@ -25,13 +25,23 @@ jobs:
         git checkout 3b3bd424827a1f7f4813216f6b32b6c61e386b2e
         .\bootstrap-vcpkg.bat
 
-    - name: Fix dead 7-zip download URL
+    - name: Patch vcpkg for dead URLs
       shell: powershell
       run: |
-        # The 7-zip.org URL for v21.07 is dead. Patch vcpkgTools.xml to use a SourceForge mirror.
-        $xml = "${{ runner.workspace }}\vcpkg\scripts\vcpkgTools.xml"
-        (Get-Content $xml) -replace 'https://www.7-zip.org/a/7z2107-extra.7z', 'https://downloads.sourceforge.net/project/sevenzip/7-Zip/21.07/7z2107-extra.7z' -replace 'https://www.7-zip.org/a/7z2107-x64.msi', 'https://downloads.sourceforge.net/project/sevenzip/7-Zip/21.07/7z2107-x64.msi' | Set-Content $xml
-        Write-Host "Patched vcpkgTools.xml with working mirror URLs"
+        $vcpkgDir = "${{ runner.workspace }}\vcpkg"
+
+        # Fix 1: 7-zip.org URLs are dead - use SourceForge mirror
+        $xml = "$vcpkgDir\scripts\vcpkgTools.xml"
+        (Get-Content $xml) -replace 'https://www.7-zip.org/a/', 'https://downloads.sourceforge.net/project/sevenzip/7-Zip/21.07/' | Set-Content $xml
+
+        # Fix 2: MSYS2 package URLs are dead - disable vcpkg_fixup_pkgconfig entirely
+        # (OTCv8 uses MSBuild/vcpkg integration, not pkg-config)
+        $pkgconfig = "$vcpkgDir\scripts\cmake\vcpkg_fixup_pkgconfig.cmake"
+        $content = Get-Content $pkgconfig -Raw
+        $content = $content -replace '(function\(vcpkg_fixup_pkgconfig\))', "`$1`nreturn()"
+        Set-Content $pkgconfig -Value $content
+
+        Write-Host "Patched vcpkgTools.xml and disabled vcpkg_fixup_pkgconfig"
 
     - name: Install vcpkg packages
       shell: cmd
