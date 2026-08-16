@@ -22,26 +22,7 @@ jobs:
       run: |
         git clone https://github.com/microsoft/vcpkg.git ${{ runner.workspace }}\vcpkg
         cd ${{ runner.workspace }}\vcpkg
-        git checkout 3b3bd424827a1f7f4813216f6b32b6c61e386b2e
         .\bootstrap-vcpkg.bat
-
-    - name: Patch vcpkg for dead URLs
-      shell: powershell
-      run: |
-        $vcpkgDir = "${{ runner.workspace }}\vcpkg"
-
-        # Fix 1: 7-zip.org URLs are dead - use SourceForge mirror
-        $xml = "$vcpkgDir\scripts\vcpkgTools.xml"
-        (Get-Content $xml) -replace 'https://www.7-zip.org/a/', 'https://downloads.sourceforge.net/project/sevenzip/7-Zip/21.07/' | Set-Content $xml
-
-        # Fix 2: MSYS2 package URLs are dead - disable vcpkg_fixup_pkgconfig entirely
-        # (OTCv8 uses MSBuild/vcpkg integration, not pkg-config)
-        $pkgconfig = "$vcpkgDir\scripts\cmake\vcpkg_fixup_pkgconfig.cmake"
-        $content = Get-Content $pkgconfig -Raw
-        $content = $content -replace '(function\(vcpkg_fixup_pkgconfig\))', "`$1`nreturn()"
-        Set-Content $pkgconfig -Value $content
-
-        Write-Host "Patched vcpkgTools.xml and disabled vcpkg_fixup_pkgconfig"
 
     - name: Install vcpkg packages
       shell: cmd
@@ -52,9 +33,13 @@ jobs:
     - name: Verify boost headers
       shell: powershell
       run: |
-        $h = "${{ runner.workspace }}\vcpkg\installed\x86-windows-static\include\boost\asio\io_service.hpp"
+        $h = "${{ runner.workspace }}\vcpkg\installed\x86-windows-static\include\boost\asio.hpp"
         if (Test-Path $h) { Write-Host "OK: boost headers found" }
-        else { Write-Host "FAIL: headers missing"; exit 1 }
+        else {
+          Write-Host "FAIL: headers missing. Contents of installed dir:"
+          Get-ChildItem "${{ runner.workspace }}\vcpkg\installed\" -Recurse -Depth 3 | Select-Object FullName | Out-String | Write-Host
+          exit 1
+        }
 
     - name: Integrate vcpkg
       run: ${{ runner.workspace }}\vcpkg\vcpkg integrate install
