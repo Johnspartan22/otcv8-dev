@@ -25,21 +25,15 @@ jobs:
         git checkout 3b3bd424827a1f7f4813216f6b32b6c61e386b2e
         .\bootstrap-vcpkg.bat
 
-    - name: Provide 7zip to vcpkg
+    - name: Pre-download 7zip for vcpkg
       shell: powershell
       run: |
-        # The old vcpkg tries to download 7zip 21.07 from a URL that no longer exists.
-        # Provide the system 7-zip (already on the runner) where vcpkg expects it.
-        $toolPaths = @(
-          "${{ runner.workspace }}\vcpkg\downloads\tools\7zip\21.07",
-          "${{ runner.workspace }}\vcpkg\downloads\tools\7z-21.7.0-windows",
-          "${{ runner.workspace }}\vcpkg\downloads\tools\7zip-21.7.0-windows"
-        )
-        foreach ($p in $toolPaths) {
-          New-Item -ItemType Directory -Force -Path $p | Out-Null
-          Copy-Item "C:\Program Files\7-Zip\7z.exe" "$p\7za.exe" -Force
-          Copy-Item "C:\Program Files\7-Zip\7z.dll" "$p\7z.dll" -Force
-        }
+        # The original 7-zip 21.07 URL on 7-zip.org is dead (404).
+        # Download from SourceForge where old versions are still hosted.
+        $dest = "${{ runner.workspace }}\vcpkg\downloads"
+        New-Item -ItemType Directory -Force -Path $dest | Out-Null
+        Invoke-WebRequest -Uri "https://sourceforge.net/projects/sevenzip/files/7-Zip/21.07/7z2107-extra.7z/download" -OutFile "$dest\7z2107-extra.7z" -UserAgent "Mozilla/5.0" -MaximumRedirection 10
+        Write-Host "7zip archive downloaded: $((Get-Item "$dest\7z2107-extra.7z").Length) bytes"
 
     - name: Install vcpkg packages
       shell: cmd
@@ -47,21 +41,15 @@ jobs:
         ${{ runner.workspace }}\vcpkg\vcpkg install --recurse --triplet x86-windows-static --clean-after-build boost-iostreams boost-asio boost-beast boost-system boost-variant boost-lockfree boost-process boost-program-options boost-uuid boost-filesystem luajit glew physfs openal-soft libogg libvorbis zlib libzip bzip2 openssl
         if %errorlevel% neq 0 exit /b %errorlevel%
 
-    - name: Verify boost headers exist
+    - name: Verify boost headers
       shell: powershell
       run: |
-        $headerPath = "${{ runner.workspace }}\vcpkg\installed\x86-windows-static\include\boost\asio\io_service.hpp"
-        if (Test-Path $headerPath) {
-          Write-Host "boost headers found OK"
-        } else {
-          Write-Host "ERROR: boost headers not found at $headerPath"
-          Get-ChildItem "${{ runner.workspace }}\vcpkg\installed\" -Recurse -Depth 2 | Select-Object FullName
-          exit 1
-        }
+        $h = "${{ runner.workspace }}\vcpkg\installed\x86-windows-static\include\boost\asio\io_service.hpp"
+        if (Test-Path $h) { Write-Host "OK: boost headers found" }
+        else { Write-Host "FAIL: headers missing"; exit 1 }
 
     - name: Integrate vcpkg
-      run: |
-        ${{ runner.workspace }}\vcpkg\vcpkg integrate install
+      run: ${{ runner.workspace }}\vcpkg\vcpkg integrate install
 
     - name: Compile otclient_dx
       timeout-minutes: 20
