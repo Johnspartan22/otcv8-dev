@@ -25,15 +25,13 @@ jobs:
         git checkout 3b3bd424827a1f7f4813216f6b32b6c61e386b2e
         .\bootstrap-vcpkg.bat
 
-    - name: Pre-download 7zip for vcpkg
+    - name: Fix dead 7-zip download URL
       shell: powershell
       run: |
-        # The original 7-zip 21.07 URL on 7-zip.org is dead (404).
-        # Download from SourceForge where old versions are still hosted.
-        $dest = "${{ runner.workspace }}\vcpkg\downloads"
-        New-Item -ItemType Directory -Force -Path $dest | Out-Null
-        Invoke-WebRequest -Uri "https://sourceforge.net/projects/sevenzip/files/7-Zip/21.07/7z2107-extra.7z/download" -OutFile "$dest\7z2107-extra.7z" -UserAgent "Mozilla/5.0" -MaximumRedirection 10
-        Write-Host "7zip archive downloaded: $((Get-Item "$dest\7z2107-extra.7z").Length) bytes"
+        # The 7-zip.org URL for v21.07 is dead. Patch vcpkgTools.xml to use a SourceForge mirror.
+        $xml = "${{ runner.workspace }}\vcpkg\scripts\vcpkgTools.xml"
+        (Get-Content $xml) -replace 'https://www.7-zip.org/a/7z2107-extra.7z', 'https://downloads.sourceforge.net/project/sevenzip/7-Zip/21.07/7z2107-extra.7z' -replace 'https://www.7-zip.org/a/7z2107-x64.msi', 'https://downloads.sourceforge.net/project/sevenzip/7-Zip/21.07/7z2107-x64.msi' | Set-Content $xml
+        Write-Host "Patched vcpkgTools.xml with working mirror URLs"
 
     - name: Install vcpkg packages
       shell: cmd
