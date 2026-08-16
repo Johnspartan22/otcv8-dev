@@ -338,10 +338,13 @@ std::string BitmapFont::wrapText(const std::string& text, int maxWidth, std::vec
 
     lineLength += wordLength;
     if (lineLength > maxWidth) { // too long line with this word
-        updateColors(colors, lastColorSeparator, 1);
-        outText += '\n';
-        lineLength = wordLength;
+    if (colors && text[lastSeparator] == ' ') {
+        updateColors(colors, lastColorSeparator, -1);
+        lastSeparator += 1;
     }
+    outText += '\n';
+    lineLength = wordLength;
+}
     for (size_t j = lastSeparator; j < text.size(); ++j) { // copy word
         outText += text[j];
     }
