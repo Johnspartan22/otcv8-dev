@@ -29,15 +29,21 @@ jobs:
       shell: powershell
       run: |
         $vcpkgDir = "${{ runner.workspace }}\vcpkg"
-        # Fix 1: 7-zip.org dead - use SourceForge mirror
         $xml = "$vcpkgDir\scripts\vcpkgTools.xml"
         (Get-Content $xml) -replace 'https://www.7-zip.org/a/', 'https://downloads.sourceforge.net/project/sevenzip/7-Zip/21.07/' | Set-Content $xml
-        # Fix 2: MSYS2 packages dead - disable pkgconfig fixup (not needed for MSBuild builds)
         $pkgconfig = "$vcpkgDir\scripts\cmake\vcpkg_fixup_pkgconfig.cmake"
         $content = Get-Content $pkgconfig -Raw
         $content = $content -replace '(function\(vcpkg_fixup_pkgconfig\))', "`$1`nreturn()"
         Set-Content $pkgconfig -Value $content
         Write-Host "Patched 7-zip URLs and disabled pkgconfig fixup"
+
+    - name: Patch source for boost 1.82
+      shell: powershell
+      run: |
+        # Fix: boost::beast string_view no longer has .to_string() in 1.82
+        $session = "src\framework\http\session.cpp"
+        (Get-Content $session) -replace '(\w+)\["Content-Length"\]\.to_string\(\)', 'std::string($1["Content-Length"])' -replace '(\w+)\.to_string\(\)', 'std::string($1)' | Set-Content $session
+        Write-Host "Patched session.cpp for boost 1.82 string_view"
 
     - name: Install vcpkg packages
       shell: cmd
