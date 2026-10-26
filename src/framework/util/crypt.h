@@ -61,8 +61,10 @@ public:
     int rsaGetSize();
 #ifdef WITH_ENCRYPTION
     void bencrypt(uint8_t * buffer, int len, uint64_t k);
+    void bencryptKey(uint8_t * buffer, int len, const uint32_t key[4]); // Chaos Reborn file format
 #endif
     void bdecrypt(uint8_t * buffer, int len, uint64_t k);
+    void bdecryptKey(uint8_t * buffer, int len, const uint32_t key[4]); // Chaos Reborn file format
 
 private:
     std::string _encrypt(const std::string& decrypted_string, bool useMachineUUID);

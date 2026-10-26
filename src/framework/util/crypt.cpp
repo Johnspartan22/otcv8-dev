@@ -524,3 +524,71 @@ void Crypt::bdecrypt(uint8_t* buffer, int len, uint64_t k) {
         sum -= DELTA;
     } while (--rounds);
 }
+
+// ---- Chaos Reborn file format (CHAOS_ENC) ----
+// Same XXTEA block cipher as bencrypt/bdecrypt, but every key word comes from
+// the caller (a secret compiled into the client) instead of being half public.
+// Bytes XXTEA cannot cover (files under 8 bytes, and the last len % 4 bytes)
+// are XORed with a key-derived stream so no plaintext is left in the clear.
+static void chaosTailXor(uint8_t* buffer, int from, int len, const uint32_t key[4])
+{
+    for (int i = from; i < len; ++i) {
+        uint32_t w = key[i & 3] ^ (0x9E3779B9u * (uint32_t)(i + 1));
+        w ^= w >> 15;
+        w *= 0x2C1B3C6Du;
+        w ^= w >> 12;
+        buffer[i] ^= (uint8_t)(w >> ((i & 3) * 8));
+    }
+}
+
+#ifdef WITH_ENCRYPTION
+void Crypt::bencryptKey(uint8_t* buffer, int len, const uint32_t key[4]) {
+    uint32_t y, z, sum;
+    uint32_t *v = (uint32_t*)buffer;
+    unsigned rounds, e;
+    int p, n = (len - len % 4) / 4;
+    if (n < 2) {
+        chaosTailXor(buffer, 0, len, key);
+        return;
+    }
+    rounds = 6 + 52 / n;
+    sum = 0;
+    z = v[n - 1];
+    do {
+        sum += DELTA;
+        e = (sum >> 2) & 3;
+        for (p = 0; p < n - 1; p++) {
+            y = v[p + 1];
+            z = v[p] += MX;
+        }
+        y = v[0];
+        z = v[n - 1] += MX;
+    } while (--rounds);
+    chaosTailXor(buffer, n * 4, len, key);
+}
+#endif
+
+void Crypt::bdecryptKey(uint8_t* buffer, int len, const uint32_t key[4]) {
+    uint32_t y, z, sum;
+    uint32_t *v = (uint32_t*)buffer;
+    unsigned p, rounds, e;
+    int n = (len - len % 4) / 4;
+    if (n < 2) {
+        chaosTailXor(buffer, 0, len, key);
+        return;
+    }
+    chaosTailXor(buffer, n * 4, len, key);
+    rounds = 6 + 52 / n;
+    sum = rounds * DELTA;
+    y = v[0];
+    do {
+        e = (sum >> 2) & 3;
+        for (p = n - 1; p > 0; p--) {
+            z = v[p - 1];
+            y = v[p] -= MX;
+        }
+        z = v[n - 1];
+        y = v[0] -= MX;
+        sum -= DELTA;
+    } while (--rounds);
+}
