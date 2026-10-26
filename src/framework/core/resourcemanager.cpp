@@ -28,6 +28,7 @@
 #include <framework/luaengine/luainterface.h>
 #include <framework/platform/platform.h>
 #include <framework/util/crypt.h>
+#include <framework/util/chaoskey.h>
 #include <framework/http/http.h>
 #include <queue>
 #include <regex>
@@ -448,6 +449,9 @@ bool ResourceManager::isFileEncryptedOrCompressed(const std::string& fileName)
         return false;
     
     if (fileContent.substr(0, 4).compare("ENC3") == 0)
+        return true;
+
+    if (fileContent.substr(0, 4).compare(CHAOS_ENC_MAGIC) == 0)
         return true;
 
     if ((uint8_t)fileContent[0] != 0x1f || (uint8_t)fileContent[1] != 0x8b || (uint8_t)fileContent[2] != 0x08) {
@@ -999,10 +1003,20 @@ void ResourceManager::encrypt(const std::string& seed) {
             continue;
         std::string buffer(std::istreambuf_iterator<char>(in_file), {});
         in_file.close();
-        if (buffer.size() >= 4 && buffer.substr(0, 4).compare("ENC3") == 0)
+        if (buffer.size() >= 4 && buffer.substr(0, 4).compare(CHAOS_ENC_MAGIC) == 0)
             continue; // already encrypted
 
-        if (!encryptForAndroid && it.extension().string() == luaExtension && it.filename().string() != INIT_FILENAME) {
+        // file still in the old public otcv8 format (ENC3): convert it
+        bool convertedFromEnc3 = false;
+        if (buffer.size() >= 4 && buffer.substr(0, 4).compare("ENC3") == 0) {
+            if (!decryptBuffer(buffer)) {
+                g_logger.error(stdext::format("%s - old ENC3 file could not be decrypted, left unchanged", it.string()));
+                continue;
+            }
+            convertedFromEnc3 = true;
+        }
+
+        if (!convertedFromEnc3 && !encryptForAndroid && it.extension().string() == luaExtension && it.filename().string() != INIT_FILENAME) {
             std::string bytecode = g_lua.generateByteCode(buffer, it.string());
             if (bytecode.length() > 10) {
                 buffer = bytecode;
@@ -1022,10 +1036,74 @@ void ResourceManager::encrypt(const std::string& seed) {
             continue;
         out_file.write(buffer.data(), buffer.size());
         out_file.close();
-        g_logger.info(stdext::format("%s - encrypted", it.string()));
+        if (convertedFromEnc3)
+            g_logger.info(stdext::format("%s - converted from ENC3 and encrypted", it.string()));
+        else
+            g_logger.info(stdext::format("%s - encrypted", it.string()));
     }
 }
-#endif 
+#endif
+
+// CHAOS_FORMAT_BEGIN
+// ---- Chaos Reborn file format ----
+// Header (24 bytes): magic[4] | nonce u64 | compressed size u32 | size u32 | check u32
+// followed by the zlib-compressed file, encrypted with Crypt::bencryptKey.
+// The per-file key is derived from the secret in chaoskey.h and the nonce, so
+// the key is never stored in the file (ENC3 stored it in the header).
+// The nonce comes from the file contents, not from a random source, so
+// re-encrypting an unchanged file gives identical bytes and the updater
+// does not make players download it again.
+static void chaosDeriveKey(uint64_t nonce, uint32_t out[4])
+{
+    const uint32_t base[4] = { CHAOS_KEY_0, CHAOS_KEY_1, CHAOS_KEY_2, CHAOS_KEY_3 };
+    uint32_t lo = (uint32_t)(nonce & 0xFFFFFFFF);
+    uint32_t hi = (uint32_t)(nonce >> 32);
+    for (int i = 0; i < 4; ++i) {
+        int r = 8 * i + 5;
+        uint32_t h = base[i] ^ (lo + 0x9E3779B9u * (uint32_t)(i + 1));
+        h ^= (hi << r) | (hi >> (32 - r));
+        h ^= h >> 16;
+        h *= 0x85EBCA6Bu;
+        h ^= h >> 13;
+        h *= 0xC2B2AE35u;
+        h ^= h >> 16;
+        out[i] = h ^ base[(i + 1) & 3];
+    }
+}
+
+static bool chaosDecryptBuffer(std::string& buffer)
+{
+    if (buffer.size() < 24)
+        return false;
+
+    uint64_t nonce = *(uint64_t*)&buffer[4];
+    uint32_t compressed_size = *(uint32_t*)&buffer[12];
+    uint32_t size = *(uint32_t*)&buffer[16];
+    uint32_t check = *(uint32_t*)&buffer[20];
+
+    if (compressed_size != buffer.size() - 24)
+        return false;
+
+    uint32_t key[4];
+    chaosDeriveKey(nonce, key);
+    g_crypt.bdecryptKey((uint8_t*)&buffer[24], (int)compressed_size, key);
+
+    std::string new_buffer;
+    new_buffer.resize(size);
+    unsigned long new_buffer_size = new_buffer.size();
+    if (uncompress((uint8_t*)&new_buffer[0], &new_buffer_size, (uint8_t*)&buffer[24], compressed_size) != Z_OK)
+        return false;
+    if (new_buffer_size != size)
+        return false;
+
+    uint32_t adler = stdext::adler32((const uint8_t*)&new_buffer[0], size);
+    if ((adler ^ key[3]) != check)
+        return false;
+
+    buffer.swap(new_buffer);
+    return true;
+}
+// CHAOS_FORMAT_END
 
 bool ResourceManager::decryptBuffer(std::string& buffer) {
 #ifdef FREE_VERSION
@@ -1033,6 +1111,10 @@ bool ResourceManager::decryptBuffer(std::string& buffer) {
 #else
     if (buffer.size() < 5)
         return true;
+
+    if (buffer.substr(0, 4).compare(CHAOS_ENC_MAGIC) == 0) {
+        return chaosDecryptBuffer(buffer);
+    }
 
     if (buffer.substr(0, 4).compare("ENC3") != 0) {
         return false;
@@ -1071,19 +1153,25 @@ bool ResourceManager::decryptBuffer(std::string& buffer) {
 
 #ifdef WITH_ENCRYPTION
 bool ResourceManager::encryptBuffer(std::string& buffer, uint32_t seed) {
-    if (buffer.size() >= 4 && buffer.substr(0, 4).compare("ENC3") == 0)
+    // CHAOS_ENCRYPT_BEGIN
+    // seed (from "--encrypt <seed>") was only used by ENC3. The Chaos format
+    // uses the secret key compiled in from chaoskey.h instead.
+    (void)seed;
+
+    if (buffer.size() >= 4 && (buffer.substr(0, 4).compare(CHAOS_ENC_MAGIC) == 0 || buffer.substr(0, 4).compare("ENC3") == 0))
         return false; // already encrypted
 
-    // not random beacause it would require to update to new files each time
-    int64_t key = stdext::adler32((const uint8_t*)&buffer[0], buffer.size());
-    key <<= 32;
-    key += stdext::adler32((const uint8_t*)&buffer[0], buffer.size() / 2);
+    // not random because it would require to update to new files each time
+    uint32_t crc = ::crc32(0L, Z_NULL, 0);
+    crc = ::crc32(crc, (const Bytef*)buffer.data(), (uInt)buffer.size());
+    uint64_t nonce = ((uint64_t)crc << 32) | (uint64_t)stdext::adler32((const uint8_t*)&buffer[0], buffer.size() / 2);
 
-    std::string new_buffer(24 + buffer.size() * 2, '0');
-    new_buffer[0] = 'E';
-    new_buffer[1] = 'N';
-    new_buffer[2] = 'C';
-    new_buffer[3] = '3';
+    uint32_t key[4];
+    chaosDeriveKey(nonce, key);
+
+    std::string new_buffer(24 + compressBound((uLong)buffer.size()), '\0');
+    for (int i = 0; i < 4; ++i)
+        new_buffer[i] = CHAOS_ENC_MAGIC[i];
 
     unsigned long dstLen = new_buffer.size() - 24;
     if (compress((uint8_t*)&new_buffer[24], &dstLen, (const uint8_t*)buffer.data(), buffer.size()) != Z_OK) {
@@ -1092,14 +1180,15 @@ bool ResourceManager::encryptBuffer(std::string& buffer, uint32_t seed) {
     }
     new_buffer.resize(24 + dstLen);
 
-    *(int64_t*)&new_buffer[4] = key;
+    *(uint64_t*)&new_buffer[4] = nonce;
     *(uint32_t*)&new_buffer[12] = (uint32_t)dstLen;
     *(uint32_t*)&new_buffer[16] = (uint32_t)buffer.size();
-    *(uint32_t*)&new_buffer[20] = ((uint32_t)stdext::adler32((const uint8_t*)&buffer[0], buffer.size())) ^ seed;
+    *(uint32_t*)&new_buffer[20] = ((uint32_t)stdext::adler32((const uint8_t*)&buffer[0], buffer.size())) ^ key[3];
 
-    g_crypt.bencrypt((uint8_t*)&new_buffer[0] + 24, new_buffer.size() - 24, key);
-    buffer = new_buffer;
+    g_crypt.bencryptKey((uint8_t*)&new_buffer[0] + 24, (int)dstLen, key);
+    buffer.swap(new_buffer);
     return true;
+    // CHAOS_ENCRYPT_END
 }
 #endif
 
@@ -1146,3 +1235,73 @@ void ResourceManager::unmountMemoryData()
     m_loadedFromMemory = false;
     m_loadedFromArchive = false;
 }
+
+#if defined(WITH_DECRYPTION) && !defined(ANDROID)
+// otclient_gl.exe --decrypt
+// The reverse of --encrypt: decrypts, in place, every encrypted file (Chaos
+// format or old ENC3) in init.lua, data, modules, mods and layouts of the
+// current folder. Run it on a COPY of the client folder.
+// Lua files that --encrypt compiled to bytecode stay bytecode: the original
+// Lua source is not stored anywhere, so it cannot be recovered.
+void ResourceManager::decrypt() {
+    const std::string dirsToCheck[] = { "data", "modules", "mods", "layouts" };
+    const std::string luaExtension = ".lua";
+
+    g_logger.setLogFile("decryption.log");
+    g_logger.info("----------------------");
+
+    std::queue<std::filesystem::path> toDecrypt;
+    toDecrypt.push(std::filesystem::path(INIT_FILENAME));
+
+    for (auto& dir : dirsToCheck) {
+        if (!std::filesystem::exists(dir))
+            continue;
+        for (auto&& entry : std::filesystem::recursive_directory_iterator(std::filesystem::path(dir))) {
+            if (!std::filesystem::is_regular_file(entry.path()))
+                continue;
+            toDecrypt.push(entry.path());
+        }
+    }
+
+    int decrypted = 0;
+    int failed = 0;
+    while (!toDecrypt.empty()) {
+        auto it = toDecrypt.front();
+        toDecrypt.pop();
+        std::ifstream in_file(it, std::ios::binary);
+        if (!in_file.is_open())
+            continue;
+        std::string buffer(std::istreambuf_iterator<char>(in_file), {});
+        in_file.close();
+
+        bool isChaos = buffer.size() >= 4 && buffer.substr(0, 4).compare(CHAOS_ENC_MAGIC) == 0;
+        bool isEnc3 = buffer.size() >= 4 && buffer.substr(0, 4).compare("ENC3") == 0;
+        if (!isChaos && !isEnc3)
+            continue; // not encrypted
+
+        if (buffer.size() < 24 || !decryptBuffer(buffer)) {
+            g_logger.error(stdext::format("%s - FAILED to decrypt (wrong key or damaged file), left unchanged", it.string()));
+            failed++;
+            continue;
+        }
+
+        std::ofstream out_file(it, std::ios::binary);
+        if (!out_file.is_open()) {
+            g_logger.error(stdext::format("%s - FAILED to open for writing, left unchanged", it.string()));
+            failed++;
+            continue;
+        }
+        out_file.write(buffer.data(), buffer.size());
+        out_file.close();
+        decrypted++;
+
+        bool isBytecode = it.extension().string() == luaExtension && !buffer.empty() && buffer[0] == '\x1b';
+        if (isBytecode)
+            g_logger.info(stdext::format("%s - decrypted (Lua bytecode, original source is not recoverable)", it.string()));
+        else
+            g_logger.info(stdext::format("%s - decrypted", it.string()));
+    }
+
+    g_logger.info(stdext::format("%i files decrypted, %i failed", decrypted, failed));
+}
+#endif
