@@ -13,6 +13,20 @@ jobs:
       with:
           submodules: recursive
 
+    - name: Write encryption key
+      shell: powershell
+      env:
+        CHAOS_KEY: ${{ secrets.CHAOS_KEY }}
+      run: |
+        $k = "$env:CHAOS_KEY".Trim()
+        if ($k -notmatch '^[0-9A-Fa-f]{32}$') { Write-Error "CHAOS_KEY secret is missing or is not exactly 32 hex characters (0-9, A-F)"; exit 1 }
+        $lines = @('#ifndef CHAOSKEY_H', '#define CHAOSKEY_H')
+        for ($i = 0; $i -lt 4; $i++) { $lines += "#define CHAOS_KEY_$i 0x" + $k.Substring($i * 8, 8) }
+        $lines += '#define CHAOS_ENC_MAGIC "CRE1"'
+        $lines += '#endif'
+        Set-Content -Path src\framework\util\chaoskey.h -Value $lines -Encoding ascii
+        Write-Host "chaoskey.h written"
+
     - name: Setup MSBuild and add to PATH
       uses: microsoft/setup-msbuild@v2
       id: setup_msbuild
